@@ -1,0 +1,471 @@
+diff --git a/backend/package.json b/backend/package.json
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/backend/package.json
+@@ -0,0 +1,18 @@
++{
++  "name": "aixslt-backend",
++  "version": "1.0.0",
++  "description": "Backend for AI XSLT Compiler - runs Saxon HE 9.5 jar",
++  "main": "server.js",
++  "type": "module",
++  "scripts": {
++    "start": "node server.js"
++  },
++  "dependencies": {
++    "body-parser": "^1.20.2",
++    "cors": "^2.8.5",
++    "express": "^4.18.2"
++  }
++}
+diff --git a/backend/xsltRunner.js b/backend/xsltRunner.js
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/backend/xsltRunner.js
+@@ -0,0 +1,79 @@
++import { exec } from "child_process";
++import fs from "fs";
++import path from "path";
++
++/**
++ * runXslt(xmlString, xslString) -> Promise<string>
++ *
++ * Uses the Saxon-HE 9.5 jar located at ../saxon-9.5.1.6-he/saxon9he.jar (relative to backend/)
++ * Writes temporary files input.xml and stylesheet.xsl in the backend working directory,
++ * invokes Saxon, then returns the output HTML (or text) as string.
++ */
++export function runXslt(xmlString, xslString) {
++  return new Promise((resolve, reject) => {
++    try {
++      // ensure working directory files
++      fs.writeFileSync("input.xml", xmlString, "utf8");
++      fs.writeFileSync("stylesheet.xsl", xslString, "utf8");
++
++      // path to the saxon jar in repo root: ../saxon-9.5.1.6-he/saxon9he.jar
++      const saxonJar = path.resolve(process.cwd(), "../saxon-9.5.1.6-he/saxon9he.jar");
++
++      if (!fs.existsSync(saxonJar)) {
++        return reject(`Saxon jar not found at ${saxonJar}. Please place saxon9he.jar at repo/saxon-9.5.1.6-he/`);
++      }
++
++      // Use net.sf.saxon.Transform entry point in Saxon-HE 9.5
++      const cmd = `java -cp "${saxonJar}" net.sf.saxon.Transform -s:input.xml -xsl:stylesheet.xsl -o:output.html`;
++
++      exec(cmd, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
++        if (err) {
++          // include stderr when available
++          const message = stderr || err.message || String(err);
++          return reject(`Saxon execution failed: ${message}`);
++        }
++
++        try {
++          const out = fs.existsSync("output.html") ? fs.readFileSync("output.html", "utf8") : stdout;
++          resolve(out);
++        } catch (readErr) {
++          reject(`Failed reading output: ${readErr.message}`);
++        }
++      });
++    } catch (e) {
++      reject(e.message || String(e));
++    }
++  });
++}
+diff --git a/backend/server.js b/backend/server.js
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/backend/server.js
+@@ -0,0 +1,84 @@
++import express from "express";
++import cors from "cors";
++import bodyParser from "body-parser";
++import { runXslt } from "./xsltRunner.js";
++
++const app = express();
++app.use(cors());
++app.use(bodyParser.json({ limit: "10mb" }));
++
++// Health
++app.get("/health", (req, res) => res.json({ status: "ok" }));
++
++/**
++ * POST /compile
++ * Body: { xml: "<...>", xsl: "<...>" }
++ * Returns: { output: "<transformed output as string>" }
++ */
++app.post("/compile", async (req, res) => {
++  const { xml, xsl } = req.body || {};
++  if (typeof xml !== "string" || typeof xsl !== "string") {
++    return res.status(400).json({ error: "Request body must include 'xml' and 'xsl' string fields." });
++  }
++
++  try {
++    const output = await runXslt(xml, xsl);
++    res.json({ output });
++  } catch (err) {
++    console.error("Compile error:", err);
++    res.status(500).json({ error: String(err) });
++  }
++});
++
++const PORT = process.env.PORT || 4000;
++app.listen(PORT, () => {
++  console.log(`AIXSLT backend listening on port ${PORT}`);
++});
+diff --git a/frontend/package.json b/frontend/package.json
+new file mode 100644
+index 0000000..4444444
+--- /dev/null
++++ b/frontend/package.json
+@@ -0,0 +1,29 @@
++{
++  "name": "aixslt-frontend",
++  "version": "1.0.0",
++  "private": true,
++  "dependencies": {
++    "axios": "^1.6.2",
++    "react": "^18.2.0",
++    "react-dom": "^18.2.0"
++  },
++  "scripts": {
++    "start": "node ./scripts/start-dev-server.js",
++    "build": "echo 'No build configured; this is a minimal app for local dev'"
++  }
++}
+diff --git a/frontend/scripts/start-dev-server.js b/frontend/scripts/start-dev-server.js
+new file mode 100644
+index 0000000..5555555
+--- /dev/null
++++ b/frontend/scripts/start-dev-server.js
+@@ -0,0 +1,38 @@
++/**
++ * Minimal static dev server for the frontend during development.
++ * This keeps the repo lightweight and avoids create-react-app complexity.
++ */
++import http from "http";
++import fs from "fs";
++import path from "path";
++
++const port = 3000;
++const root = path.resolve(process.cwd(), "public");
++
++const mime = {
++  ".html": "text/html",
++  ".js": "application/javascript",
++  ".css": "text/css",
++  ".json": "application/json",
++  ".png": "image/png",
++  ".svg": "image/svg+xml"
++};
++
++const server = http.createServer((req, res) => {
++  let file = req.url === "/" ? "/index.html" : req.url;
++  const full = path.join(root, file);
++  if (fs.existsSync(full) && fs.statSync(full).isFile()) {
++    const ext = path.extname(full);
++    res.setHeader("Content-Type", mime[ext] || "application/octet-stream");
++    res.end(fs.readFileSync(full));
++  } else {
++    res.writeHead(404);
++    res.end("Not found");
++  }
++});
++
++server.listen(port, () => {
++  console.log(`Frontend dev server running: http://localhost:${port}`);
++});
+diff --git a/frontend/public/index.html b/frontend/public/index.html
+new file mode 100644
+index 0000000..6666666
+--- /dev/null
++++ b/frontend/public/index.html
+@@ -0,0 +1,96 @@
++<!doctype html>
++<html lang="en">
++  <head>
++    <meta charset="utf-8" />
++    <meta name="viewport" content="width=device-width,initial-scale=1" />
++    <title>AI XSLT Compiler</title>
++    <link rel="stylesheet" href="/styles.css" />
++  </head>
++  <body>
++    <div id="root"></div>
++    <script src="/main.js"></script>
++  </body>
++  </html>
+diff --git a/frontend/public/styles.css b/frontend/public/styles.css
+new file mode 100644
+index 0000000..7777777
+--- /dev/null
++++ b/frontend/public/styles.css
+@@ -0,0 +1,180 @@
++:root{
++  --bg:#0f1724;
++  --panel:#0b1220;
++  --muted:#9aa4b2;
++  --accent:#2dd4bf;
++  --card:#0b1520;
++  --glass: rgba(255,255,255,0.03);
++}
++*{box-sizing:border-box;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial}
++html,body,#root{height:100%;margin:0;background:linear-gradient(180deg,#071023 0%, #081426 100%)}
++.app {
++  height:100vh;
++  display:grid;
++  grid-template-columns: 1fr 1fr;
++  gap:12px;
++  padding:14px;
++}
++.left-column, .right-column {
++  background:var(--panel);
++  border-radius:10px;
++  padding:10px;
++  display:flex;
++  flex-direction:column;
++  gap:10px;
++}
++.pane-title { color:var(--accent); font-weight:600; margin-bottom:6px; font-size:14px; }
++.editor, textarea {
++  width:100%;
++  min-height:220px;
++  background:var(--card);
++  border:1px solid rgba(255,255,255,0.03);
++  color:#e6eef6;
++  padding:10px;
++  border-radius:6px;
++  resize:vertical;
++  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono","Courier New", monospace;
++  font-size:13px;
++}
++.controls { display:flex; gap:8px; align-items:center; }
++.compile-btn {
++  position:fixed;
++  right:20px;
++  bottom:20px;
++  background:var(--accent);
++  color:#06201f;
++  padding:10px 16px;
++  border-radius:8px;
++  border:none;
++  font-weight:700;
++  cursor:pointer;
++}
++.output-tabs { display:flex; gap:6px; margin-bottom:6px; }
++.output-area { background:var(--glass); padding:8px; border-radius:6px; min-height:180px; color:#dbeafe; overflow:auto; }
++.ai-tabs { display:flex; gap:6px; }
++.ai-area { min-height:120px; background:var(--card); color:#dbeafe; padding:10px; border-radius:6px; resize:vertical;}
++.compiler-select { padding:6px 8px; border-radius:6px; background:#061016; color:#dbeafe; border:1px solid rgba(255,255,255,0.03); }
++.params { display:flex; gap:8px; }
++.param-input { flex:1; padding:6px; border-radius:6px; background:#061216; color:#dbeafe; border:1px solid rgba(255,255,255,0.03) }
+diff --git a/frontend/public/main.js b/frontend/public/main.js
+new file mode 100644
+index 0000000..8888888
+--- /dev/null
++++ b/frontend/public/main.js
+@@ -0,0 +1,230 @@
++// Minimal frontend app (no build tool). Renders a multi-pane UI, calls backend /compile.
++(function(){
++  // minimal DOM helper
++  const el = (tag, attrs={}, ...kids) => {
++    const e = document.createElement(tag);
++    Object.entries(attrs).forEach(([k,v]) => { if (k === 'class') e.className = v; else e.setAttribute(k,v); });
++    kids.flat().forEach(c => {
++      if (typeof c === 'string') e.appendChild(document.createTextNode(c));
++      else if (c) e.appendChild(c);
++    });
++    return e;
++  };
++
++  const root = document.getElementById('root');
++  root.className = 'app';
++
++  // left column
++  const left = el('div', {class:'left-column'});
++  // XML input
++  const xmlTitle = el('div',{class:'pane-title'}, 'Input XML');
++  const xmlEditor = el('textarea', {class:'editor', id:'xml-editor'});
++  xmlEditor.value = `<?xml version="1.0"?>
++<catalog>
++  <book id="b1">
++    <title>XML Processing</title>
++    <author>Ramesh Varanganti</author>
++  </book>
++</catalog>`;
++
++  // params area (placeholder)
++  const paramsTitle = el('div',{class:'pane-title'}, 'Params');
++  const paramsWrap = el('div', {class:'params'}, el('input',{class:'param-input', placeholder:'name'}), el('input',{class:'param-input', placeholder:'value'}));
++
++  // output area
++  const outputTitle = el('div',{class:'pane-title'}, 'Output');
++  const outputTabs = el('div',{class:'output-tabs'});
++  const rawBtn = el('button', {}, 'Raw');
++  const htmlBtn = el('button', {}, 'HTML Preview');
++  outputTabs.appendChild(rawBtn);
++  outputTabs.appendChild(htmlBtn);
++  const outputArea = el('div',{class:'output-area', id:'output-area'}, '');
++
++  left.append(xmlTitle, xmlEditor, paramsTitle, paramsWrap, outputTitle, outputTabs, outputArea);
++
++  // right column
++  const right = el('div',{class:'right-column'});
++  const compilerWrap = el('div',{class:'controls'});
++  const compLabel = el('div',{}, 'Compiler:');
++  const compSelect = el('select',{class:'compiler-select', id:'compiler-select'});
++  ['SAXON HE'].forEach(o => { const opt = el('option',{}, o); compSelect.appendChild(opt); });
++  compilerWrap.append(compLabel, compSelect);
++
++  const xslTitle = el('div',{class:'pane-title'}, 'Stylesheet (XSL)');
++  const xslEditor = el('textarea',{class:'editor', id:'xsl-editor'});
++  xslEditor.value = `<?xml version="1.0"?>
++<xsl:stylesheet version="2.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
++  <xsl:output method="html" indent="yes"/>
++  <xsl:template match="/catalog">
++    <html><body><h2>Books</h2><xsl:for-each select="book"><p><strong><xsl:value-of select="title"/></strong> by <xsl:value-of select="author"/></p></xsl:for-each></body></html>
++  </xsl:template>
++</xsl:stylesheet>`;
++
++  // AI tabs
++  const aiTitle = el('div',{class:'pane-title'}, 'AI Assistants');
++  const aiTabs = el('div',{class:'ai-tabs'});
++  const chatBtn = el('button', {}, 'ChatGPT');
++  const gemBtn = el('button', {}, 'Gemini');
++  const aiArea = el('textarea',{class:'ai-area', id:'ai-area', placeholder:'Ask ChatGPT or Gemini...'});
++  aiTabs.append(chatBtn, gemBtn);
++
++  right.append(compilerWrap, xslTitle, xslEditor, aiTitle, aiTabs, aiArea);
++
++  // compile button
++  const compileBtn = el('button',{class:'compile-btn', id:'compile-btn'}, 'Generate XSLT');
++
++  root.append(left, right, compileBtn);
++
++  // event handling
++  rawBtn.onclick = () => {
++    const txt = document.getElementById('output-area');
++    txt.innerText = window.__lastOutputRaw || '';
++  };
++  htmlBtn.onclick = () => {
++    const out = window.__lastOutputRaw || '';
++    // create an overlay preview
++    const w = window.open();
++    w.document.open();
++    w.document.write(out);
++    w.document.close();
++  };
++
++  compileBtn.onclick = async () => {
++    compileBtn.disabled = true;
++    compileBtn.innerText = 'Compiling...';
++    try {
++      const xml = document.getElementById('xml-editor').value;
++      const xsl = document.getElementById('xsl-editor').value;
++      const resp = await fetch('http://localhost:4000/compile', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ xml, xsl })
++      });
++      const data = await resp.json();
++      if (resp.ok) {
++        window.__lastOutputRaw = data.output;
++        document.getElementById('output-area').innerText = data.output;
++      } else {
++        document.getElementById('output-area').innerText = `Error: ${data.error || JSON.stringify(data)}`;
++      }
++    } catch (e) {
++      document.getElementById('output-area').innerText = `Request failed: ${e.message || e}`;
++    } finally {
++      compileBtn.disabled = false;
++      compileBtn.innerText = 'Generate XSLT';
++    }
++  };
++
++  // basic AI tab placeholder behavior
++  chatBtn.onclick = () => { aiArea.placeholder = 'Ask ChatGPT...'; };
++  gemBtn.onclick = () => { aiArea.placeholder = 'Ask Gemini...'; };
++
++})();
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..9999999
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,160 @@
++# AI XSLT Compiler
++
++This patch adds a minimal backend and frontend to your existing repository to create a multi-pane
++XSLT compiler UI that uses your Saxon-HE 9.5 jar already stored in:
++
++```
++saxon-9.5.1.6-he/saxon9he.jar
++```
++
++## What was added
++
++- `backend/` - Express-based API that writes temporary files and invokes Saxon-HE jar to run XSLT transforms.
++- `frontend/` - Minimal static frontend served from `frontend/public` that provides the four-pane UI:
++  - Input XML
++  - Params (placeholder)
++  - Output (raw + preview)
++  - Stylesheet editor
++  - Compiler dropdown
++  - AI tabs (ChatGPT + Gemini) placeholders
++
++## How to run locally
++
++1. Clone or fetch the repo and ensure the Saxon jar is present at:
++
++   ```
++   saxon-9.5.1.6-he/saxon9he.jar
++   ```
++
++2. Start the backend:
++
++   ```bash
++   cd backend
++   npm install
++   npm start
++   ```
++
++   Backend will listen on `http://localhost:4000`. The API endpoint `/compile` accepts JSON:
++   ```json
++   { "xml": "<...>", "xsl": "<...>" }
++   ```
++   and returns `{ "output": "<transformed output>" }`.
++
++3. Start the frontend:
++
++   ```bash
++   cd frontend
++   npm install
++   npm start
++   ```
++
++   A minimal static frontend server will run at `http://localhost:3000`. This UI calls the backend `/compile` endpoint.
++
++## Notes & next steps
++
++- This is a minimal, lightweight setup intended to be easy to inspect and adapt.
++- The AI tabs are placeholders. If you'd like, I can wire them to:
++  - OpenAI Chat Completions (ChatGPT) using your API key (server-side proxy recommended)
++  - Google Gemini API (via server-side proxy)
++- To make the frontend production-ready, I can convert the frontend into a React app with build scripts (CRA / Vite) or add Docker configurations.
++
++If you want the full, production-style React + build pipeline or CI/CD and a PR opened in your repo, tell me and I'll prepare that next.
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..aaaaaaaa
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,10 @@
++/node_modules
++/backend/node_modules
++/frontend/node_modules
++/output.html
++/input.xml
++/stylesheet.xsl
++/dist
++.env
++.DS_Store
